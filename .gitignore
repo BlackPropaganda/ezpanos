@@ -209,8 +209,9 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# OpenAI Codex
+# AI Assistant Files
 .codex
+AGENTS.md
 
 # project TOML file
 pyproject.toml
