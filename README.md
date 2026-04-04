@@ -1,6 +1,22 @@
 # EZPanOS
 lightweight PAN-OS utility library focused on practical operational tasks.
 
+## Why `ezpanos` exists
+
+`ezpanos` is not a replacement for Palo Alto Networks’ official SDKs.
+
+
+It grew out of working directly with PAN-OS automation and seeing how often engineers still end up dealing with hardcoded XPath, XML-heavy responses, and task-specific parsing logic.
+
+`ezpanos` exists to make that experience more practical.
+
+The PAN-OS ecosystem exposes strong configuration and object-management primitives, but real-world automation often needs more than object CRUD:
+* intuitive command execution
+* JSON-normalized output
+* Multi-device and Panorama-oriented workflows
+
+The goal is to make operational automation easier to build, read, and reuse.
+
 ## Installation
 ```bash
 pip install ezpanos
