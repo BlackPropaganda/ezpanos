@@ -93,3 +93,20 @@ print(delete_result)
 commit_result = fw.commit(wait_for_job=True)
 print(commit_result)
 ```
+
+## Experimental: Intent-Driven Policy Engineering
+
+`ezpanos` is also exploring an intent-driven workflow layer for policy operations.
+
+Operators often know the connection requirements they need, but translating that requirement into environment-aware implementations across an estate of devices and security zones is tedious and error-prone.
+
+The experimental workflow uses natural language for intent capture, while keeping execution deterministic and reviewable.
+
+Design principles:
+- intent in, ruleset out
+- deterministic resolution of implementation details
+- bounded execution paths
+- explicit operator review before commission
+- no unrestricted autonomous environment mutation
+
+This functionality is currently gated while the workflow model is hardened and validated.

@@ -1493,13 +1493,7 @@ class EzPanOS:
         if entries:
             return entries
 
-        result_block = initial_response.get("response", {}).get("result", {})
-        if not isinstance(result_block, dict):
-            return []
-
-        job_id = result_block.get("job")
-        if isinstance(job_id, dict):
-            job_id = job_id.get("id") or job_id.get("_text")
+        job_id = self.extract_job_id(initial_response)
         if not job_id:
             return []
 
@@ -1525,14 +1519,7 @@ class EzPanOS:
             if entries:
                 return entries
 
-            poll_result = poll_response.get("response", {}).get("result", {})
-            if not isinstance(poll_result, dict):
-                return []
-
-            status = poll_result.get("status")
-            poll_job = poll_result.get("job")
-            if isinstance(poll_job, dict):
-                status = poll_job.get("status", status)
+            status, _ = self._extract_job_status_result(poll_response)
 
             if str(status).upper() in {"FIN", "FINISHED", "DONE"}:
                 return []
@@ -2267,70 +2254,78 @@ class EzPanOS:
             "reason": None if (delete_response and not exists_after) else "delete_not_confirmed",
         }
 
-    def _extract_commit_job_id(self, response: dict | None) -> str | None:
+    @staticmethod
+    def _scalar_text(value: Any) -> str | None:
+        if not isinstance(value, (str, int, float)):
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @staticmethod
+    def _walk_payload_nodes(payload: Any):
+        stack = [payload]
+        while stack:
+            node = stack.pop()
+            yield node
+            if isinstance(node, dict):
+                for value in reversed(list(node.values())):
+                    stack.append(value)
+            elif isinstance(node, list):
+                for item in reversed(node):
+                    stack.append(item)
+
+    def _extract_job_id(self, response: dict | None) -> str | None:
         result_block = self._response_result(response)
         if not isinstance(result_block, dict):
             return None
 
-        job = result_block.get("job")
-        if isinstance(job, dict):
-            value = job.get("id") or job.get("_text")
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        if isinstance(job, (str, int, float)):
-            value = str(job).strip()
-            if value:
-                return value
+        for node in self._walk_payload_nodes(result_block):
+            if not isinstance(node, dict):
+                continue
 
-        # Best-effort recursive scan for first `job` token.
-        def walk(node):
-            if isinstance(node, dict):
-                for key, value in node.items():
-                    if key == "job":
-                        if isinstance(value, dict):
-                            nested = value.get("id") or value.get("_text")
-                            if isinstance(nested, (str, int, float)) and str(nested).strip():
-                                return str(nested).strip()
-                        elif isinstance(value, (str, int, float)) and str(value).strip():
-                            return str(value).strip()
-                    found = walk(value)
-                    if found:
-                        return found
-            elif isinstance(node, list):
-                for item in node:
-                    found = walk(item)
-                    if found:
-                        return found
-            return None
+            for key in ("job", "jobid", "job-id"):
+                if key not in node:
+                    continue
 
-        return walk(result_block)
+                value = node.get(key)
+                if key == "job" and isinstance(value, dict):
+                    for candidate_key in ("id", "jobid", "job-id", "_text", "value"):
+                        job_id = self._scalar_text(value.get(candidate_key))
+                        if job_id:
+                            return job_id
+
+                job_id = self._scalar_text(value)
+                if job_id:
+                    return job_id
+
+        return None
+
+    def extract_job_id(self, response: dict | None) -> str | None:
+        """
+        Return the PAN-OS job ID from a command response when one is present.
+        """
+        return self._extract_job_id(response)
 
     def _extract_job_status_result(self, response: dict | None) -> tuple[str | None, str | None]:
         result_block = self._response_result(response)
         if not isinstance(result_block, dict):
             return None, None
 
-        def walk(node):
-            if isinstance(node, dict):
-                status_value = node.get("status")
-                result_value = node.get("result")
-                if isinstance(status_value, (str, int, float)):
-                    status_text = str(status_value).strip()
-                    result_text = str(result_value).strip() if isinstance(result_value, (str, int, float)) else None
-                    if status_text:
-                        return status_text, result_text
-                for value in node.values():
-                    found_status, found_result = walk(value)
-                    if found_status:
-                        return found_status, found_result
-            elif isinstance(node, list):
-                for item in node:
-                    found_status, found_result = walk(item)
-                    if found_status:
-                        return found_status, found_result
-            return None, None
+        for node in self._walk_payload_nodes(result_block):
+            if not isinstance(node, dict):
+                continue
 
-        return walk(result_block)
+            job_block = node.get("job")
+            if isinstance(job_block, dict):
+                job_status = self._scalar_text(job_block.get("status"))
+                if job_status:
+                    return job_status, self._scalar_text(job_block.get("result"))
+
+            status = self._scalar_text(node.get("status"))
+            if status:
+                return status, self._scalar_text(node.get("result"))
+
+        return None, None
 
     def commit(
         self,
@@ -2349,7 +2344,7 @@ class EzPanOS:
         )
         submit_status = self._response_status(submit_response)
         submit_code = self._response_code(submit_response)
-        job_id = self._extract_commit_job_id(submit_response)
+        job_id = self.extract_job_id(submit_response)
 
         result = {
             "submitted": bool(submit_response),
