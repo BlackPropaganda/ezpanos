@@ -1,0 +1,17 @@
+{
+  "command_tree_path": "src/command_tree/11.0/commands.txt",
+  "known_root_commands": [
+    "target",
+    "schedule",
+    "clear",
+    "show",
+    "set",
+    "delete",
+    "request",
+    "debug",
+    "find"
+  ],
+  "compatibility": {
+    "infer_request_system_software_version": true
+  }
+}

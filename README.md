@@ -10,12 +10,11 @@ It grew out of working directly with PAN-OS automation and seeing how often engi
 
 `ezpanos` exists to make that experience more practical.
 
-The PAN-OS ecosystem exposes strong configuration and object-management primitives, but real-world automation often needs more than object CRUD:
-* intuitive command execution
-* JSON-normalized output
-* Multi-device and Panorama-oriented workflows
+The PAN-OS ecosystem exposes strong configuration and object-management primitives, but real-world operational automatiosn require lower-level PanOS command execution and response parsing-- making operations requiring application logic more intuitive to build.
 
-The goal is to make operational automation easier to build, read, and reuse.
+Right now, the CLI and execution interfaces return JSON. Higher-order abstractions on objects introduce maintenance overhead. This is more of an execution and translation layer for higher-order automations and projects.
+
+The goal is to make operational automation easier to read and build.
 
 ## Installation
 ```bash
@@ -29,6 +28,11 @@ from ezpanos import EzPanOS
 endpoint = "10.0.0.1"
 fw = EzPanOS(endpoint=endpoint, username="admin")
 print(fw.execute("show system info"))
+```
+
+For slower systems/commands, raise the default API timeout:
+```python
+fw = EzPanOS(endpoint=endpoint, username="admin", request_timeout_default=90)
 ```
 
 If password is omitted, you are securely prompted. Credentials entered once can be reused in-memory for subsequent connections in the same run.
@@ -94,19 +98,20 @@ commit_result = fw.commit(wait_for_job=True)
 print(commit_result)
 ```
 
-## Experimental: Intent-Driven Policy Engineering
+## Job sensitive commands
+Some commands like software download/install as well as standard commit jobs execute beyond the xml command success.
 
-`ezpanos` is also exploring an intent-driven workflow layer for policy operations.
+To monitor the job id of an executed command:
+```
+response = fw.execute("request sustem software download 11.1.6-h3")
+job_id = fw.extract_job_id(response)
 
-Operators often know the connection requirements they need, but translating that requirement into environment-aware implementations across an estate of devices and security zones is tedious and error-prone.
+# Or likewise:
 
-The experimental workflow uses natural language for intent capture, while keeping execution deterministic and reviewable.
+version = "10.1.1"
+response = fw.execute(f"request sustem software download version: {version}")
+job_id = fw.extract_job_id(response)
 
-Design principles:
-- intent in, ruleset out
-- deterministic resolution of implementation details
-- bounded execution paths
-- explicit operator review before commission
-- no unrestricted autonomous environment mutation
-
-This functionality is currently gated while the workflow model is hardened and validated.
+This job can then be monitored with
+response = fw.execute(f"show jobs id {job_id}")
+```

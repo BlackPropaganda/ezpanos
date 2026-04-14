@@ -2,6 +2,7 @@ import urllib
 import requests
 import getpass
 import ipaddress
+import os
 
 from urllib3.exceptions import InsecureRequestWarning
 import re
@@ -16,6 +17,7 @@ from copy import deepcopy
 from ezpanos.utils import *
 from ezpanos.models import PanosConfig
 from ezpanos.factories import *
+from ezpanos.command_parser import parse_command_to_xml
 
 """
 PanOS API integration
@@ -86,43 +88,12 @@ def is_network_location(ip_address: str) -> bool:
 
 def build_xml_from_command(command_str: str) -> str:
     """
-    Converts a space-separated command string into nested XML tags.
-    Handles special cases like variables (starting with $) which are treated as values.
+    Convert a plaintext PAN-OS CLI command into XML API command payload.
 
-    Example:
-        "show system info"
-        -> "<show><system><info></info></system></show>"
-
-        "show devices deviceid $DEVICE_ID"
-        -> "<show><devices><deviceid>$DEVICE_ID</deviceid></devices></show>"
-
-    Args:
-        command_str (str): Command string.
-
-    Returns:
-        str: XML API Command string.
+    The heavy-lifting parser is implemented in the dedicated command parser
+    subsystem so parsing rules can evolve independently from API execution.
     """
-    parts = command_str.strip().split()
-    xml = ""
-    stack = []
-
-    i = 0
-    while i < len(parts):
-        part = parts[i]
-        # If next part is a variable, treat as value
-        if (i + 1 < len(parts)) and parts[i + 1].startswith("$"):
-            xml += f"<{part}>{parts[i + 1]}</{part}>"
-            i += 2
-        else:
-            xml += f"<{part}>"
-            stack.append(part)
-            i += 1
-
-    # Close all opened tags
-    while stack:
-        xml += f"</{stack.pop()}>"
-
-    return xml
+    return parse_command_to_xml(command_str)
 
 
 class EzPanOS:
@@ -320,6 +291,51 @@ class EzPanOS:
 
         return effective
 
+    @classmethod
+    def _resolve_api_defaults_for_endpoint(cls, config_block: dict, endpoint: str | None) -> dict:
+        """
+        Build effective API defaults from profile-level and endpoint-level blocks.
+
+        Supported shape:
+        {
+          "api_defaults": {"request_timeout": 60, "keygen_timeout": 30},
+          "endpoints": [
+            {"endpoint": "10.0.0.1", "api_defaults": {"request_timeout": 90}}
+          ]
+        }
+        """
+        effective = {}
+        if not isinstance(config_block, dict):
+            return effective
+
+        effective = cls._deep_merge_dict(effective, config_block.get("api_defaults"))
+        endpoint_text = str(endpoint).strip() if endpoint is not None else None
+        if not endpoint_text:
+            return effective
+
+        for entry in cls._normalize_profile_endpoint_entries(config_block):
+            if not isinstance(entry, dict):
+                continue
+            entry_endpoint = cls._coalesce_config_string(entry, "endpoint", "firewall_endpoint")
+            if not entry_endpoint:
+                continue
+            if str(entry_endpoint).strip() != endpoint_text:
+                continue
+            effective = cls._deep_merge_dict(effective, entry.get("api_defaults"))
+            break
+
+        return effective
+
+    @staticmethod
+    def _coerce_positive_timeout(value: Any, default: float) -> float:
+        try:
+            candidate = float(value)
+            if candidate <= 0:
+                raise ValueError
+            return candidate
+        except (TypeError, ValueError):
+            return float(default)
+
     @staticmethod
     def _coerce_bool(value: Any, default: bool = False) -> bool:
         if isinstance(value, bool):
@@ -333,6 +349,27 @@ class EzPanOS:
             if normalized in {"0", "false", "no", "n", "off"}:
                 return False
         return bool(default)
+
+    @classmethod
+    def _resolve_timeout_setting(
+        cls,
+        explicit_value: Any,
+        env_var: str,
+        config_block: dict | None,
+        config_key: str,
+        default: float,
+    ) -> float:
+        if explicit_value is not None:
+            return cls._coerce_positive_timeout(explicit_value, default=default)
+
+        env_raw = os.getenv(env_var, "").strip()
+        if env_raw:
+            return cls._coerce_positive_timeout(env_raw, default=default)
+
+        config_value = None
+        if isinstance(config_block, dict):
+            config_value = config_block.get(config_key)
+        return cls._coerce_positive_timeout(config_value, default=default)
 
     @staticmethod
     def _extract_payload_scalar(value: Any) -> str | None:
@@ -654,7 +691,13 @@ class EzPanOS:
         return endpoint, instance
 
     @classmethod
-    def request_api_key(cls, endpoint: str, username: str, password: str) -> str | None:
+    def request_api_key(
+        cls,
+        endpoint: str,
+        username: str,
+        password: str,
+        request_timeout: int | float = 30,
+    ) -> str | None:
         requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
         params = {
             "type": "keygen",
@@ -664,7 +707,8 @@ class EzPanOS:
         url = f"https://{endpoint}/api?{urllib.parse.urlencode(params)}"
 
         try:
-            response = requests.get(url, verify=False)
+            timeout = cls._coerce_positive_timeout(request_timeout, default=30.0)
+            response = requests.get(url, verify=False, timeout=timeout)
             response.raise_for_status()
             root = ET.fromstring(response.text)
             key = root.findtext(".//key")
@@ -865,6 +909,7 @@ class EzPanOS:
         endpoint: str,
         username: str | None = None,
         password: str | None = None,
+        request_timeout: int | float = 30,
     ) -> str:
         """
         Prompt securely for missing credentials and return a generated API key.
@@ -874,7 +919,12 @@ class EzPanOS:
         if password is None:
             password = getpass.getpass("Password: ")
 
-        api_key = cls.request_api_key(endpoint=endpoint, username=username, password=password)
+        api_key = cls.request_api_key(
+            endpoint=endpoint,
+            username=username,
+            password=password,
+            request_timeout=request_timeout,
+        )
         if not api_key:
             raise RuntimeError("Failed to generate API key from provided credentials.")
         return api_key
@@ -887,6 +937,8 @@ class EzPanOS:
         api_key=None,
         config_path=None,
         config_profile=None,
+        request_timeout_default: int | float | None = None,
+        keygen_request_timeout: int | float | None = None,
         connect_on_init: bool = True,
         fail_on_init_error: bool = False,
     ):
@@ -896,6 +948,7 @@ class EzPanOS:
         self.config_path = config_path
         self.config_profile = config_profile
         self.policy_defaults = {}
+        self.api_defaults = {}
         config_block = None
 
         if config_path:
@@ -933,6 +986,21 @@ class EzPanOS:
         self.panorama_template_stacks = []
         if isinstance(config_block, dict):
             self.policy_defaults = self._resolve_policy_defaults_for_endpoint(config_block, self.endpoint)
+            self.api_defaults = self._resolve_api_defaults_for_endpoint(config_block, self.endpoint)
+        self.request_timeout_default = self._resolve_timeout_setting(
+            explicit_value=request_timeout_default,
+            env_var="EZPANOS_REQUEST_TIMEOUT",
+            config_block=self.api_defaults,
+            config_key="request_timeout",
+            default=30.0,
+        )
+        self.keygen_request_timeout = self._resolve_timeout_setting(
+            explicit_value=keygen_request_timeout,
+            env_var="EZPANOS_KEYGEN_TIMEOUT",
+            config_block=self.api_defaults,
+            config_key="keygen_timeout",
+            default=self.request_timeout_default,
+        )
         self.panos = None
         self.connected = False
         self.connection_error = None
@@ -960,6 +1028,7 @@ class EzPanOS:
                 endpoint=self.endpoint,
                 username=self.username,
                 password=self.password,
+                request_timeout=self.keygen_request_timeout,
             )
             if not self.api_key:
                 print("Failed to retrieve API key.")
@@ -985,6 +1054,7 @@ class EzPanOS:
                 endpoint=self.endpoint,
                 username=self.username,
                 password=self.password,
+                request_timeout=self.keygen_request_timeout,
             )
             self.api_key = self._normalize_api_key(self.api_key)
             if self.api_key:
@@ -1026,6 +1096,11 @@ class EzPanOS:
             return True
         return self.connect(fail_on_error=fail_on_error)
 
+    def _resolve_request_timeout(self, request_timeout: int | float | None) -> float:
+        if request_timeout is None:
+            return self._coerce_positive_timeout(self.request_timeout_default, default=30.0)
+        return self._coerce_positive_timeout(request_timeout, default=self.request_timeout_default)
+
     def execute(
         self,
         command: str = "",
@@ -1035,24 +1110,25 @@ class EzPanOS:
         api_cmd: str | None = None,
         api_element: str | None = None,
         api_params: dict | None = None,
-        request_timeout: int | float = 30,
+        request_timeout: int | float | None = None,
     ) -> dict | None:
         """
-        Docstring for execute
-        
+        Execute Command.
+
+        This command can execute arbitrary commands on the target firewall when authenticated.
+
+        Supports string and XML commands.
+
+        String commands tested for PanOS base Version 11.1
+
         :param self: PanOS Object
         :param command: PanOS CLI command string to execute for op calls
-        :param command: PanOS CLI command string to execute for op calls
         :type command: str
-        :param api_type: op (operational) | config | export
         :param api_type: op (operational) | config | export
         :type api_type: str
         :param api_action: API action (for config calls e.g. get, set, edit)
         :param api_xpath: API xpath (for config calls)
-        :param api_action: API action (for config calls e.g. get, set, edit)
-        :param api_xpath: API xpath (for config calls)
         :return: dict of XML returned by the XML API or None if something fails.
-        :rtype: dict[Any, Any] | None
         """
         try:
             self._require_api_key()
@@ -1087,12 +1163,13 @@ class EzPanOS:
             url = f"https://{self.endpoint}/api?{urllib.parse.urlencode(params)}"
 
             payload = xml_cmd.encode("utf-8") if xml_cmd else None
+            effective_timeout = self._resolve_request_timeout(request_timeout)
             resp = requests.post(
                 url,
                 data=payload,
                 headers=headers,
                 verify=False,
-                timeout=request_timeout,
+                timeout=effective_timeout,
             )
             # need to raise for status.
             resp.raise_for_status()
@@ -2332,7 +2409,7 @@ class EzPanOS:
         wait_for_job: bool = True,
         timeout: int | float = 300,
         poll_interval: int | float = 2,
-        request_timeout: int | float = 30,
+        request_timeout: int | float | None = None,
     ) -> dict:
         """
         Submit a candidate-config commit and optionally wait for job completion.
@@ -3599,4 +3676,3 @@ if __name__ == "__main__":
     else:
         # print usage
         print("Script Usage: python3 panorama.py --interactive")
-
