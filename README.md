@@ -36,6 +36,7 @@ fw = EzPanOS(endpoint=endpoint, username="admin", request_timeout_default=90)
 ```
 
 If password is omitted, you are securely prompted. Credentials entered once can be reused in-memory for subsequent connections in the same run.
+Credential precedence is deterministic: explicit `username/password` arguments are used first, then config profile values, then cache fallback for missing values only.
 
 ## Config Profiles
 You can use a `config.json` file for endpoint/profile organization and optional usernames/passwords.
@@ -57,17 +58,21 @@ Example `config.json`:
 }
 ```
 
-Build instances:
+Build an estate object:
 ```python
-from ezpanos import EzPanOS
+from ezpanos.estate import Estate
 
-instances = EzPanOS.instances_from_config_profile(
-    config_path="config.json",
-    config_profile="estate",
+estate = Estate(
+    config="config.json",
+    profile="estate",
 )
-```
 
-Note that the name of the `config_profile` is `estate`, this is configurable if you intend to logically separate the management of different such estates. This is useful for environments with multiple Panorama Instances.
+for device in estate.devices:
+    print(device.endpoint, device.estate_role)
+```
+`estate` is a concrete `ezpanos.Estate` instance that directly owns a list of `EzPanOS` devices.
+
+Note that the `profile` value is configurable if you intend to logically separate the management of different such estates. This is useful for environments with multiple Panorama instances.
 
 If passwords are not present in config, you will be prompted and values are reused from in-memory cache where possible.
 

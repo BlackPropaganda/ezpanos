@@ -158,12 +158,14 @@ class EzPanOS:
         endpoint: str | None,
         username: str | None,
         password: str | None,
+        allow_endpoint_lookup: bool = True,
+        allow_username_lookup: bool = True,
     ) -> tuple[str | None, str | None]:
         username_norm = cls._normalize_credential(username)
         password_norm = cls._normalize_credential(password)
 
         endpoint_key = cls._normalize_endpoint_cache_key(endpoint)
-        if endpoint_key:
+        if allow_endpoint_lookup and endpoint_key:
             cached_pair = cls._credential_cache_by_endpoint.get(endpoint_key)
             if cached_pair:
                 cached_username, cached_password = cached_pair
@@ -172,7 +174,7 @@ class EzPanOS:
                 if (password_norm is None) and (username_norm == cached_username):
                     password_norm = cached_password
 
-        if username_norm and password_norm is None:
+        if allow_username_lookup and username_norm and password_norm is None:
             password_norm = cls._credential_cache_by_username.get(username_norm)
 
         return username_norm, password_norm
@@ -720,190 +722,6 @@ class EzPanOS:
         return None
 
     @classmethod
-    def instances_from_config_profile(
-        cls,
-        config_path: str,
-        config_profile: str = "default",
-        include_unavailable: bool = False,
-        connect_on_init: bool = True,
-    ) -> list["EzPanOS"]:
-        """
-        Build multiple EzPanOS instances from one config profile.
-
-        Each endpoint entry may include its own username/password.
-        Profile-level credentials are used as defaults when endpoint-level
-        values are omitted.
-
-        By default, unavailable endpoints are skipped instead of raising
-        connection exceptions. Set include_unavailable=True to return them too.
-        """
-        return cls.estate_instances_from_config_profile(
-            config_path=config_path,
-            config_profile=config_profile,
-            include_unavailable=include_unavailable,
-            connect_on_init=connect_on_init,
-            expand_panorama=False,
-            include_panorama_controllers=True,
-        )
-
-    @classmethod
-    def estate_instances_from_config_profile(
-        cls,
-        config_path: str,
-        config_profile: str = "default",
-        include_unavailable: bool = False,
-        connect_on_init: bool = True,
-        expand_panorama: bool = True,
-        include_panorama_controllers: bool = True,
-    ) -> list["EzPanOS"]:
-        """
-        Build an estate of EzPanOS instances from a config profile.
-
-        When `expand_panorama=True`, profile entries marked as Panorama controllers
-        (role/type/is_panorama/discover_managed_devices hints) are expanded by
-        discovering managed firewalls, device-groups, and template assignments.
-        """
-        config_data = cls._load_config_data(config_path)
-        profile_block = cls._resolve_config_block(config_data, endpoint=None, config_profile=config_profile)
-
-        default_username = cls._coalesce_config_string(profile_block, "username", "user")
-        default_password = cls._coalesce_config_string(profile_block, "password")
-
-        entries = cls._normalize_profile_endpoint_entries(profile_block)
-        if not entries:
-            raise ValueError(f"profile `{config_profile}` contains no endpoint entries")
-
-        instances = []
-        seen_ids = set()
-
-        def add_instance(instance: "EzPanOS", endpoint_hint: str | None = None) -> None:
-            estate_id = str(getattr(instance, "estate_id", None) or getattr(instance, "endpoint", "unknown-device"))
-            if estate_id in seen_ids:
-                return
-            if instance.connected or include_unavailable or (not connect_on_init):
-                seen_ids.add(estate_id)
-                instances.append(instance)
-            else:
-                endpoint_text = endpoint_hint or getattr(instance, "endpoint", "unknown-endpoint")
-                print(f"Warning: skipping unavailable endpoint {endpoint_text}: {instance.connection_error}")
-
-        for index, entry in enumerate(entries, start=1):
-            endpoint, instance = cls._build_instance_from_profile_entry(
-                entry=entry,
-                config_path=config_path,
-                config_profile=config_profile,
-                default_username=default_username,
-                default_password=default_password,
-                connect_on_init=connect_on_init,
-            )
-            if instance is None:
-                continue
-
-            is_panorama_entry = bool(expand_panorama and cls._looks_like_panorama_entry(entry, profile_block=profile_block))
-            role = "panorama-controller" if is_panorama_entry else "firewall"
-            if not getattr(instance, "estate_id", None) or getattr(instance, "estate_id", None) == instance.endpoint:
-                instance.estate_id = cls._build_estate_id(
-                    endpoint=instance.endpoint,
-                    role=role,
-                    profile=config_profile,
-                    entry_index=index,
-                )
-            instance.estate_role = role
-            instance.panorama_controller_id = instance.estate_id if is_panorama_entry else None
-            instance.panorama_controller_endpoint = instance.endpoint if is_panorama_entry else None
-            instance.panorama_managed_serial = None
-            instance.panorama_device_groups = []
-            instance.panorama_templates = []
-            instance.panorama_template_stacks = []
-
-            if (not is_panorama_entry) or include_panorama_controllers:
-                add_instance(instance, endpoint_hint=endpoint)
-
-            if not is_panorama_entry:
-                continue
-
-            if not instance.connected:
-                if connect_on_init:
-                    continue
-                if not instance.ensure_connected(fail_on_error=False):
-                    continue
-
-            try:
-                discovery = instance.discover_panorama_managed_devices(
-                    include_templates=True,
-                    include_raw=False,
-                )
-            except Exception as exc:
-                print(f"Warning: panorama discovery failed for {instance.endpoint}: {exc}")
-                continue
-
-            controller_id = str(getattr(instance, "estate_id", instance.endpoint))
-            discovered_devices = ensure_list(discovery.get("managed_devices"))
-            for discovered_index, managed in enumerate(discovered_devices, start=1):
-                if not isinstance(managed, dict):
-                    continue
-
-                managed_endpoint = cls._coalesce_payload_string(
-                    managed,
-                    "endpoint",
-                    "ip-address",
-                    "ip_address",
-                    "management-ip",
-                    "management_ip",
-                    "mgmt-ip",
-                    "mgmt_ip",
-                )
-                if not managed_endpoint:
-                    continue
-
-                managed_serial = cls._coalesce_payload_string(managed, "serial", "name", "deviceid", "device-id")
-                managed_hostname = cls._coalesce_payload_string(managed, "hostname", "host-name")
-
-                managed_username, managed_password = cls._entry_auth_tuple(
-                    entry=entry,
-                    default_username=default_username,
-                    default_password=default_password,
-                )
-                if managed_username is None:
-                    managed_username = instance.username
-                if managed_password is None:
-                    managed_password = instance.password
-
-                managed_instance = cls(
-                    endpoint=managed_endpoint,
-                    username=managed_username,
-                    password=managed_password,
-                    config_path=config_path,
-                    config_profile=config_profile,
-                    connect_on_init=connect_on_init,
-                    fail_on_init_error=False,
-                )
-                managed_instance.estate_role = "panorama-managed-firewall"
-                managed_instance.estate_id = cls._build_estate_id(
-                    endpoint=managed_endpoint,
-                    role="panorama-managed-firewall",
-                    controller_id=controller_id,
-                    serial=managed_serial,
-                    profile=config_profile,
-                    entry_index=discovered_index,
-                )
-                managed_instance.panorama_controller_id = controller_id
-                managed_instance.panorama_controller_endpoint = instance.endpoint
-                managed_instance.panorama_managed_serial = managed_serial
-                managed_instance.panorama_managed_hostname = managed_hostname
-                managed_instance.panorama_device_groups = ensure_list(managed.get("device_groups"))
-                managed_instance.panorama_templates = ensure_list(managed.get("templates"))
-                managed_instance.panorama_template_stacks = ensure_list(managed.get("template_stacks"))
-
-                add_instance(managed_instance, endpoint_hint=managed_endpoint)
-
-        if not instances:
-            print(f"Warning: profile `{config_profile}` has no available endpoints")
-            return []
-
-        return instances
-
-    @classmethod
     def prompt_and_request_api_key(
         cls,
         endpoint: str,
@@ -951,21 +769,32 @@ class EzPanOS:
         self.api_defaults = {}
         config_block = None
 
+        explicit_username = self._normalize_credential(username)
+        explicit_password = self._normalize_credential(password)
+        config_username = None
+        config_password = None
+
         if config_path:
             config_data = self._load_config_data(config_path)
             config_block = self._resolve_config_block(config_data, endpoint=endpoint, config_profile=config_profile)
 
             endpoint = endpoint or self._coalesce_config_string(config_block, "endpoint", "firewall_endpoint")
-            username = username or self._coalesce_config_string(config_block, "username", "user")
-            if password is None:
-                password = self._coalesce_config_string(config_block, "password")
-        username = self._normalize_credential(username)
-        password = self._normalize_credential(password)
+            config_username = self._normalize_credential(self._coalesce_config_string(config_block, "username", "user"))
+            config_password = self._normalize_credential(self._coalesce_config_string(config_block, "password"))
+
+        username = explicit_username if explicit_username is not None else config_username
+        password = explicit_password if explicit_password is not None else config_password
+
+        allow_endpoint_lookup = (username is None) and (password is None)
+        allow_username_lookup = password is None
         username, password = self._resolve_credentials_from_cache(
             endpoint=endpoint,
             username=username,
             password=password,
+            allow_endpoint_lookup=allow_endpoint_lookup,
+            allow_username_lookup=allow_username_lookup,
         )
+
         api_key = self._normalize_api_key(api_key)
 
         if endpoint is None:
@@ -984,6 +813,7 @@ class EzPanOS:
         self.panorama_device_groups = []
         self.panorama_templates = []
         self.panorama_template_stacks = []
+
         if isinstance(config_block, dict):
             self.policy_defaults = self._resolve_policy_defaults_for_endpoint(config_block, self.endpoint)
             self.api_defaults = self._resolve_api_defaults_for_endpoint(config_block, self.endpoint)

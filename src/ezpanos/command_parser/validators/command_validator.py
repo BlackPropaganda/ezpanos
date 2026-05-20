@@ -7,7 +7,6 @@ from ezpanos.command_parser.models.command_model import TokenizedCommand
 
 _XML_TAG_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 
-
 def is_xml_tag_name(token: str) -> bool:
     return bool(_XML_TAG_RE.match(str(token)))
 
