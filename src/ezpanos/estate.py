@@ -13,14 +13,14 @@ class Estate:
     Collection of EzPanOS clients with estate-level operations.
     """
 
-    config: str | None
+    config: str | dict[str, Any] | None
     profile: str
     devices: list["EzPanOS"] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __init__(
         self,
-        config: str | None = None,
+        config: str | dict[str, Any] | None = None,
         profile: str = "default",
         devices: list["EzPanOS"] | None = None,
         metadata: dict[str, Any] | None = None,
@@ -80,7 +80,7 @@ class Estate:
     @classmethod
     def _build_from_config_profile(
         cls,
-        config_path: str,
+        config_path: str | dict[str, Any],
         config_profile: str = "default",
         include_unavailable: bool = False,
         connect_on_init: bool = True,
@@ -92,7 +92,17 @@ class Estate:
         from ezpanos.utils import ensure_list
 
         client_factory = client_factory or EzPanOS
-        config_data = EzPanOS._load_config_data(config_path)
+        config_data: dict[str, Any]
+        config_path_for_clients: str | None
+        if isinstance(config_path, str):
+            config_data = EzPanOS._load_config_data(config_path)
+            config_path_for_clients = config_path
+        elif isinstance(config_path, dict):
+            config_data = config_path
+            config_path_for_clients = None
+        else:
+            raise TypeError("config must be a file path string or a dict")
+
         profile_block = EzPanOS._resolve_config_block(config_data, endpoint=None, config_profile=config_profile)
 
         default_username = EzPanOS._coalesce_config_string(profile_block, "username", "user")
@@ -129,11 +139,28 @@ class Estate:
                 endpoint=endpoint,
                 username=username,
                 password=password,
-                config_path=config_path,
-                config_profile=config_profile,
+                config_path=config_path_for_clients,
+                config_profile=config_profile if config_path_for_clients else None,
                 connect_on_init=connect_on_init,
                 fail_on_init_error=False,
             )
+            if config_path_for_clients is None:
+                instance.policy_defaults = EzPanOS._resolve_policy_defaults_for_endpoint(profile_block, instance.endpoint)
+                instance.api_defaults = EzPanOS._resolve_api_defaults_for_endpoint(profile_block, instance.endpoint)
+                instance.request_timeout_default = EzPanOS._resolve_timeout_setting(
+                    explicit_value=None,
+                    env_var="EZPANOS_REQUEST_TIMEOUT",
+                    config_block=instance.api_defaults,
+                    config_key="request_timeout",
+                    default=30.0,
+                )
+                instance.keygen_request_timeout = EzPanOS._resolve_timeout_setting(
+                    explicit_value=None,
+                    env_var="EZPANOS_KEYGEN_TIMEOUT",
+                    config_block=instance.api_defaults,
+                    config_key="keygen_timeout",
+                    default=instance.request_timeout_default,
+                )
 
             is_panorama_entry = bool(expand_panorama and EzPanOS._looks_like_panorama_entry(entry, profile_block=profile_block))
             role = "panorama-controller" if is_panorama_entry else "firewall"
@@ -209,11 +236,28 @@ class Estate:
                     endpoint=managed_endpoint,
                     username=managed_username,
                     password=managed_password,
-                    config_path=config_path,
-                    config_profile=config_profile,
+                    config_path=config_path_for_clients,
+                    config_profile=config_profile if config_path_for_clients else None,
                     connect_on_init=connect_on_init,
                     fail_on_init_error=False,
                 )
+                if config_path_for_clients is None:
+                    managed_instance.policy_defaults = EzPanOS._resolve_policy_defaults_for_endpoint(profile_block, managed_instance.endpoint)
+                    managed_instance.api_defaults = EzPanOS._resolve_api_defaults_for_endpoint(profile_block, managed_instance.endpoint)
+                    managed_instance.request_timeout_default = EzPanOS._resolve_timeout_setting(
+                        explicit_value=None,
+                        env_var="EZPANOS_REQUEST_TIMEOUT",
+                        config_block=managed_instance.api_defaults,
+                        config_key="request_timeout",
+                        default=30.0,
+                    )
+                    managed_instance.keygen_request_timeout = EzPanOS._resolve_timeout_setting(
+                        explicit_value=None,
+                        env_var="EZPANOS_KEYGEN_TIMEOUT",
+                        config_block=managed_instance.api_defaults,
+                        config_key="keygen_timeout",
+                        default=managed_instance.request_timeout_default,
+                    )
                 managed_instance.estate_role = "panorama-managed-firewall"
                 managed_instance.estate_id = EzPanOS._build_estate_id(
                     endpoint=managed_endpoint,

@@ -72,6 +72,28 @@ for device in estate.devices:
 ```
 `estate` is a concrete `ezpanos.Estate` instance that directly owns a list of `EzPanOS` devices.
 
+You can also pass a parsed config dictionary directly:
+```python
+from ezpanos.estate import Estate
+
+config = {
+    "profiles": {
+        "production": {
+            "username": "svc_firewall",
+            "endpoints": [
+                {"endpoint": "firewall-1.inside.example.com"},
+                {"endpoint": "firewall-2.inside.example.com"}
+            ]
+        }
+    }
+}
+
+estate = Estate(
+    config=config,
+    profile="production",
+)
+```
+
 Note that the `profile` value is configurable if you intend to logically separate the management of different such estates. This is useful for environments with multiple Panorama instances.
 
 If passwords are not present in config, you will be prompted and values are reused from in-memory cache where possible.

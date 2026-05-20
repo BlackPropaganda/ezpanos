@@ -215,3 +215,7 @@ AGENTS.md
 
 # project TOML file
 pyproject.toml
+
+# custom files
+ezpanos_git_log.txt
+live_tests.md
