@@ -76,6 +76,32 @@ Note that the `profile` value is configurable if you intend to logically separat
 
 If passwords are not present in config, you will be prompted and values are reused from in-memory cache where possible.
 
+To apply a command to a Estate:
+```python
+from ezpanos.estate import Estate
+
+estate = Estate(
+    config="config.json",
+    profile="estate",
+)
+
+
+# Example Software upgrade/installation workflow:
+
+# will make all firewalls request a system update
+estate.execute_all("request system software check")
+
+# will download a specific version of PanOS
+estate.execute_all("request system software download version <version>")
+
+# will install a specific version of PanOS
+estate.execute_all("request system software install version <version>")
+
+# will reboot firewalls
+estate.execute_all("request restart system")
+
+```
+
 ## Rule Management
 ```python
 from ezpanos import EzPanOS
@@ -107,7 +133,7 @@ print(commit_result)
 Some commands like software download/install as well as standard commit jobs execute beyond the xml command success.
 
 To monitor the job id of an executed command:
-```
+```python
 response = fw.execute("request sustem software download 11.1.6-h3")
 job_id = fw.extract_job_id(response)
 
