@@ -16,6 +16,9 @@ _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[A-Za-z0-9_.-]+)?$")
 
 class OpsCommandParser(BaseCommandParser):
     """Command parser for PAN-OS operational command strings."""
+    _TERMINAL_LEAF_VALUE_HINTS: dict[str, frozenset[str]] = {
+        "interface": frozenset({"all", "management", "hardware", "logical"}),
+    }
 
     def __init__(
         self,
@@ -266,6 +269,15 @@ class OpsCommandParser(BaseCommandParser):
         candidate_path = tuple(path + [token_lower])
         if candidate_path in self.knowledge.value_key_paths:
             return True
+
+        # Fallback for environments where command-tree knowledge is unavailable
+        # (for example package/runtime path mismatch): preserve common PAN-OS
+        # leaf-value forms such as `show interface all`.
+        is_terminal_value = (index + 2) == len(tokens)
+        if is_terminal_value:
+            hinted_values = self._TERMINAL_LEAF_VALUE_HINTS.get(token_lower, frozenset())
+            if next_token.lower() in hinted_values:
+                return True
 
         # Fallback for incomplete/partial path matches: use root-level key statistics
         # only when token is not ambiguous for that root.

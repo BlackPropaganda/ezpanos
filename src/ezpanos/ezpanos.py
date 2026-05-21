@@ -23,6 +23,11 @@ from ezpanos.command_parser import parse_command_to_xml
 PanOS API integration
 """
 
+
+class AuthenticationError(RuntimeError):
+    """Raised when PAN-OS authentication or API key generation fails."""
+
+
 def prettyprint_xml(xml_str: str, shorten=True) -> None:
     """
     Pretty prints an XML string in a tabular format, showing each tag and its content.
@@ -97,9 +102,6 @@ def build_xml_from_command(command_str: str) -> str:
 
 
 class EzPanOS:
-    _credential_cache_by_endpoint: dict[str, tuple[str, str]] = {}
-    _credential_cache_by_username: dict[str, str] = {}
-
     @staticmethod
     def _normalize_api_key(value: Any) -> str | None:
         if value is None:
@@ -127,57 +129,6 @@ class EzPanOS:
             return None
         normalized = value.strip()
         return normalized or None
-
-    @staticmethod
-    def _normalize_endpoint_cache_key(endpoint: str | None) -> str | None:
-        if not isinstance(endpoint, str):
-            return None
-        normalized = endpoint.strip().lower()
-        return normalized or None
-
-    @classmethod
-    def _cache_credentials(
-        cls,
-        endpoint: str | None,
-        username: str | None,
-        password: str | None,
-    ) -> None:
-        username_norm = cls._normalize_credential(username)
-        password_norm = cls._normalize_credential(password)
-        if not username_norm or not password_norm:
-            return
-
-        cls._credential_cache_by_username[username_norm] = password_norm
-        endpoint_key = cls._normalize_endpoint_cache_key(endpoint)
-        if endpoint_key:
-            cls._credential_cache_by_endpoint[endpoint_key] = (username_norm, password_norm)
-
-    @classmethod
-    def _resolve_credentials_from_cache(
-        cls,
-        endpoint: str | None,
-        username: str | None,
-        password: str | None,
-        allow_endpoint_lookup: bool = True,
-        allow_username_lookup: bool = True,
-    ) -> tuple[str | None, str | None]:
-        username_norm = cls._normalize_credential(username)
-        password_norm = cls._normalize_credential(password)
-
-        endpoint_key = cls._normalize_endpoint_cache_key(endpoint)
-        if allow_endpoint_lookup and endpoint_key:
-            cached_pair = cls._credential_cache_by_endpoint.get(endpoint_key)
-            if cached_pair:
-                cached_username, cached_password = cached_pair
-                if username_norm is None:
-                    username_norm = cached_username
-                if (password_norm is None) and (username_norm == cached_username):
-                    password_norm = cached_password
-
-        if allow_username_lookup and username_norm and password_norm is None:
-            password_norm = cls._credential_cache_by_username.get(username_norm)
-
-        return username_norm, password_norm
 
     @staticmethod
     def _load_config_data(config_path: str) -> dict:
@@ -744,8 +695,50 @@ class EzPanOS:
             request_timeout=request_timeout,
         )
         if not api_key:
-            raise RuntimeError("Failed to generate API key from provided credentials.")
+            raise AuthenticationError("Failed to generate API key from provided credentials.")
         return api_key
+
+    @classmethod
+    def _prompt_for_missing_credentials(
+        cls,
+        username: str | None,
+        password: str | None,
+    ) -> tuple[str, str]:
+        resolved_username = cls._normalize_credential(username)
+        resolved_password = cls._normalize_credential(password)
+
+        while resolved_username is None:
+            entered_username = cls._normalize_credential(input("Username: "))
+            if entered_username:
+                resolved_username = entered_username
+
+        while resolved_password is None:
+            entered_password = cls._normalize_credential(getpass.getpass("Password: "))
+            if entered_password:
+                resolved_password = entered_password
+
+        return resolved_username, resolved_password
+
+    @classmethod
+    def _request_api_key_or_raise(
+        cls,
+        endpoint: str,
+        username: str,
+        password: str,
+        request_timeout: int | float,
+    ) -> str:
+        api_key = cls.request_api_key(
+            endpoint=endpoint,
+            username=username,
+            password=password,
+            request_timeout=request_timeout,
+        )
+        normalized_key = cls._normalize_api_key(api_key)
+        if not normalized_key:
+            raise AuthenticationError(
+                f"Authentication failed while generating API key for endpoint {endpoint}."
+            )
+        return normalized_key
 
     def __init__(
         self,
@@ -784,16 +777,6 @@ class EzPanOS:
 
         username = explicit_username if explicit_username is not None else config_username
         password = explicit_password if explicit_password is not None else config_password
-
-        allow_endpoint_lookup = (username is None) and (password is None)
-        allow_username_lookup = password is None
-        username, password = self._resolve_credentials_from_cache(
-            endpoint=endpoint,
-            username=username,
-            password=password,
-            allow_endpoint_lookup=allow_endpoint_lookup,
-            allow_username_lookup=allow_username_lookup,
-        )
 
         api_key = self._normalize_api_key(api_key)
 
@@ -835,36 +818,17 @@ class EzPanOS:
         self.connected = False
         self.connection_error = None
 
-        if isinstance(self.username, str) and self.username and isinstance(self.password, str) and self.password:
-            self._cache_credentials(self.endpoint, self.username, self.password)
-
         if not self.api_key:
-            while self.username is None:
-                entered_username = self._normalize_credential(input("Username: "))
-                if entered_username:
-                    self.username = entered_username
-
-            if self.password is None and isinstance(self.username, str):
-                self.password = self._credential_cache_by_username.get(self.username)
-            while self.password is None:
-                entered_password = self._normalize_credential(getpass.getpass("Password: "))
-                if entered_password:
-                    self.password = entered_password
-
-            self._cache_credentials(self.endpoint, self.username, self.password)
-
-            # Gets API key with credentials if api_key not overridden
-            self.api_key = self.request_api_key(
+            self.username, self.password = self._prompt_for_missing_credentials(
+                username=self.username,
+                password=self.password,
+            )
+            self.api_key = self._request_api_key_or_raise(
                 endpoint=self.endpoint,
                 username=self.username,
                 password=self.password,
                 request_timeout=self.keygen_request_timeout,
             )
-            if not self.api_key:
-                print("Failed to retrieve API key.")
-                self.api_key = None
-            else:
-                self._cache_credentials(self.endpoint, self.username, self.password)
 
         if connect_on_init:
             self.connect(fail_on_error=fail_on_init_error)
@@ -874,27 +838,17 @@ class EzPanOS:
         if self.api_key:
             return
 
-        self.username, self.password = self._resolve_credentials_from_cache(
-            endpoint=self.endpoint,
-            username=self.username,
-            password=self.password,
-        )
-        if isinstance(self.username, str) and self.username and isinstance(self.password, str):
-            self.api_key = self.request_api_key(
-                endpoint=self.endpoint,
-                username=self.username,
-                password=self.password,
-                request_timeout=self.keygen_request_timeout,
-            )
-            self.api_key = self._normalize_api_key(self.api_key)
-            if self.api_key:
-                self._cache_credentials(self.endpoint, self.username, self.password)
-
-        if not self.api_key:
+        if not (isinstance(self.username, str) and self.username and isinstance(self.password, str) and self.password):
             raise RuntimeError(
                 "Missing API key for PAN-OS API call. "
                 "Provide a valid api_key or username/password for key generation."
             )
+        self.api_key = self._request_api_key_or_raise(
+            endpoint=self.endpoint,
+            username=self.username,
+            password=self.password,
+            request_timeout=self.keygen_request_timeout,
+        )
 
 
     def build_object(self) -> object:

@@ -5,12 +5,11 @@ lightweight PAN-OS utility library focused on practical operational tasks.
 
 `ezpanos` is not a replacement for Palo Alto Networks’ official SDKs.
 
-
 It grew out of working directly with PAN-OS automation and seeing how often engineers still end up dealing with hardcoded XPath, XML-heavy responses, and task-specific parsing logic.
 
 `ezpanos` exists to make that experience more practical.
 
-The PAN-OS ecosystem exposes strong configuration and object-management primitives, but real-world operational automatiosn require lower-level PanOS command execution and response parsing-- making operations requiring application logic more intuitive to build.
+The PAN-OS ecosystem exposes strong configuration and object-management primitives, but real-world operational automation require lower-level PanOS command execution and response parsing-- making operations requiring application logic more intuitive to build.
 
 Right now, the CLI and execution interfaces return JSON. Higher-order abstractions on objects introduce maintenance overhead. This is more of an execution and translation layer for higher-order automations and projects.
 
@@ -35,8 +34,8 @@ For slower systems/commands, raise the default API timeout:
 fw = EzPanOS(endpoint=endpoint, username="admin", request_timeout_default=90)
 ```
 
-If password is omitted, you are securely prompted. Credentials entered once can be reused in-memory for subsequent connections in the same run.
-Credential precedence is deterministic: explicit `username/password` arguments are used first, then config profile values, then cache fallback for missing values only.
+If password is omitted, you are prompted.
+Credential precedence is deterministic: explicit `username/password` arguments are used first, then config profile values, then interactive prompt for missing values.
 
 ## Config Profiles
 You can use a `config.json` file for endpoint/profile organization and optional usernames/passwords.
@@ -96,7 +95,7 @@ estate = Estate(
 
 Note that the `profile` value is configurable if you intend to logically separate the management of different such estates. This is useful for environments with multiple Panorama instances.
 
-If passwords are not present in config, you will be prompted and values are reused from in-memory cache where possible.
+If passwords are not present in config, you will be prompted.
 
 To apply a command to a Estate:
 ```python
